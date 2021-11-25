@@ -1,0 +1,465 @@
+/Protótipo Solar Traker 2 axis
+//Autor: Felipe Feijó
+//Data:07/2021
+//Project Solar Traker Two Axis
+
+//-------------------------------------------------------------//
+// Projeto TCC 9.1 - Desenvolvimento com Arduino
+// Programa/hardware: 003 - Solar Traker Two Axis + Interface para o usuário LCD + Controle Manual/Auto
+//---------------------------------------------------------------
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Stepper.h>
+
+// DEFINIÇÕES DISPLAY
+#define DISP_ENDERECO  0x27 // Endereços comuns: 0x27, 0x3F
+#define DISP_COLUNAS   16
+#define DISP_LINHAS    2
+
+// INSTANCIANDO OBJETOS
+LiquidCrystal_I2C lcd(DISP_ENDERECO, DISP_COLUNAS, DISP_LINHAS);
+//===========================================================================================================================
+//Define pinos para sinal dos LDRs
+#define SINAL_LDR_SUP_E  A0
+#define SINAL_LDR_SUP_D  A1
+#define SINAL_LDR_INF_E  A2
+#define SINAL_LDR_INF_D  A3
+
+#define LED_SUP 28 //LED SUPERIOR
+#define LED_INF 23 //LED INFERIOR
+#define LED_D   24 //LED DIREITA
+#define LED_E   25 //LED ESQUERDA
+#define LED_C   26 //LED central
+
+#define MOTOR_SUP  1 //MOTOR SUPERIOR
+#define MOTOR_INF  2 //MOTOR INFERIOR
+#define MOTOR_D    3 //MOTOR DIREITA
+#define MOTOR_E    4 //MOTOR ESQUERDA
+
+//Define saída PWM para controle de velocidade dos Drivers
+#define CLOCK1_STEPPER 3
+#define CLOCK2_STEPPER 4
+
+//Define sentido de giro do motor
+#define SENTIDO1_CWCCW 22
+#define SENTIDO2_CWCCW 29
+
+//Define Botão Manual/Auto
+#define PIN_BOTAO       2
+#define PIN_BOTAO_TELAS 5
+
+//Define ref. motor/controle
+#define DELAY_MOTOR       100 //ms
+#define MAX_STEPS_1         150
+#define MIN_STEPS_1         0
+#define MAX_STEPS_2         150
+#define MIN_STEPS_2         0
+#define TOLERANCE_CONTROL 1
+
+//========Variavel Global======================================================================================================================
+static byte  numStep1 = 0;  //Contagem de passos Motor 1
+static byte  numStep2 = 0; //Contagem de passos Motor 2
+
+//variaveis de controle manual/auto
+boolean estadoBotao = true;
+boolean estAntBotao = true;
+static bool x = LOW;
+
+//Variaveis controle das telas
+static byte telas = 0;
+boolean botaoAtu = false;
+boolean botaoAnt = false;
+static unsigned long delayEstado;
+
+//Definição do valor inicial das váriaveis
+//LDRs - SUPERIOR/INFERIOR
+static int valor_LDR_SUP_E = 0; // Armazena as informações do SINAL_LDR_SUP_E
+static byte saida_LDR_SUP_E = 0; // Converte o valor de 0a1023 em 0a255
+static int valor_LDR_SUP_D = 0; // Armazena as informações do SINAL_LDR_SUP_D
+static byte saida_LDR_SUP_D = 0; // Converte o valor de 0a1023 em 0a255
+//LDRs - ESQUERDA/DIREITA
+static int valor_LDR_INF_E = 0; // Armazena as informações do SINAL_LDR_INF_E
+static byte saida_LDR_INF_E = 0; // Converte o valor de 0a1023 em 0a255
+static int valor_LDR_INF_D = 0; // Armazena as informações do SINAL_LDR_INF_D
+static byte saida_LDR_INF_D = 0; // Converte o valor de 0a1023 em 0a255
+
+static int mediaSuperior = 0;
+static int mediaInferior = 0;
+static int mediaEsquerda = 0;
+static int mediaDireita = 0;
+
+static int difSupInf = 0;
+static int difEsqDir = 0;
+
+//=======Funções Auxiliares======================================================================================================================
+
+void Aquisicao(); //Aquisição dos dados dos sensores
+void Algoritimo(); // Efetua as operações matemáticas
+void Controle(); // Controle dos motores de passo
+void changeMenu();
+void dispMenu();
+void DebugSerial();
+
+void LDRs ();
+void Sentido_Rotacao_H ();
+void Estado();
+void LedsControle();
+void AcionaMotor( byte aciona_motor);
+/********************************************************************/
+/*                          LOOP INICIAL                            */
+/********************************************************************/
+void setup()
+{
+  //Definição de I/O
+  // LDRs
+  pinMode(A0, INPUT);
+  pinMode(A1, INPUT);
+  pinMode(A2, INPUT);
+  pinMode(A3, INPUT);
+  //LEDs
+  pinMode(22, OUTPUT);
+  pinMode(23, OUTPUT);
+  pinMode(24, OUTPUT);
+  pinMode(25, OUTPUT);
+  pinMode(26, OUTPUT);
+  // SENTIDO DE GIRO
+  pinMode(28, OUTPUT);
+  pinMode(29, OUTPUT);
+  //CLOCKs
+  pinMode(2, OUTPUT);
+  pinMode(3, OUTPUT);
+  //botões
+  pinMode(PIN_BOTAO, INPUT_PULLUP);
+  pinMode(PIN_BOTAO_TELAS, INPUT);
+
+  //PINO DE INTERRUPÇÃO
+  //attachInterrupt(digitalPinToInterrupt(PIN_BOTAO), Estado, RISING);
+
+  Serial.begin(9600); //Iniciar monitor serial
+  //Iniciar LCD
+  lcd.init(); // INICIA A COMUNICAÇÃO COM O DISPLAY
+  lcd.backlight(); // LIGA A ILUMINAÇÃO DO DISPLAY
+  //lcd.noBacklight(); // DESLIGA A ILUMINAÇÃO DO DISPLAY
+  lcd.clear(); // LIMPA O DISPLAY
+  lcd.setCursor(0, 0);
+  lcd.print("  Solar Tracker  ");
+  lcd.setCursor(0, 1);
+  lcd.print("TCC - Eletronica ");
+  delay(1000);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(" Felipe Feijo       ");
+  lcd.setCursor(0, 1);
+  lcd.print(" Colegio Politec      ");
+  delay(1000);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Inicializando...");
+  delay(1000);
+  lcd.clear();
+
+}
+
+/********************************************************************/
+/*                     LOOP PRINCIPAL                               */
+/********************************************************************/
+void loop()
+{
+  Aquisicao();
+  Algoritimo();
+  Controle();
+  changeMenu();
+  dispMenu();
+  //DebugSerial();
+ 
+}
+
+
+/********************************************************************/
+/*                    Funções auxiliares                            */
+/********************************************************************/
+void  Aquisicao() {
+  //Leitura e mapeamento do lado SUPERIOR ESQUERDO
+  valor_LDR_SUP_E = analogRead(SINAL_LDR_SUP_E); //leitura do LDR esquerdo
+  saida_LDR_SUP_E = map(valor_LDR_SUP_E, 0, 1010, 0, 99);    //Remapeia a váriavel, limita e a torna um valor menor
+  
+  //Leitura e mapeamento do lado SUPERIOR DIREITO
+  valor_LDR_SUP_D = analogRead(SINAL_LDR_SUP_D); // leitura do LDR direito
+  saida_LDR_SUP_D = map(valor_LDR_SUP_D, 0, 1010, 0, 99);   //Remapeia a váriavel, limita e a torna um valor menor
+
+  //Leitura e mapeamento do lado INFERIOR ESQUERDO
+  valor_LDR_INF_E = analogRead(SINAL_LDR_INF_E); //leitura do LDR esquerdo
+  saida_LDR_INF_E = map(valor_LDR_INF_E, 0, 1010, 0, 99);   //Remapeia a váriavel, limita e a torna um valor menor
+  
+  //Leitura e mapeamento do lado INFERIOR DIREITO
+  valor_LDR_INF_D = analogRead(SINAL_LDR_INF_D); // leitura do LDR direito
+  saida_LDR_INF_D = map(valor_LDR_INF_D, 0, 1010, 0, 99);   //Remapeia a váriavel, limita e a torna um valor menor
+}
+
+void Algoritimo() {
+  //EFETUA A MÉDIA ENTRE AS VÁRIAVEIS
+  mediaSuperior = (saida_LDR_SUP_E + saida_LDR_SUP_D) / 2;
+  mediaInferior = (saida_LDR_INF_E + saida_LDR_INF_D) / 2;
+  mediaEsquerda = (saida_LDR_SUP_E + saida_LDR_INF_E) / 2;
+  mediaDireita = (saida_LDR_SUP_D + saida_LDR_INF_D) / 2;
+
+  //DIFERENÇA ENTRE AS VARIAVEIS
+  difSupInf =  abs(mediaSuperior - mediaInferior);
+  difEsqDir =  abs(mediaEsquerda - mediaDireita);
+
+}
+void Controle() {
+	byte pulseMotor = 0;
+  /*********** Controle SUPERIOR/INFERIOR ****************/
+  if (mediaSuperior == mediaInferior) {
+	  LedsControle(LED_C);
+    digitalWrite(CLOCK1_STEPPER, 0);
+    delay(DELAY_MOTOR);
+  } else
+  if ((mediaSuperior > mediaInferior) && (difSupInf > TOLERANCE_CONTROL)) {  // Identifica eixo vertical CIMA(UP)
+      if(++numStep1 > MAX_STEPS_1 ){
+    		numStep1 = MAX_STEPS_1; 
+    	}else{		
+        LedsControle(LED_SUP);
+    		for(pulseMotor = 0; pulseMotor < difSupInf; pulseMotor++){  AcionaMotor(MOTOR_SUP);}
+    	}
+	} else
+  if ((mediaInferior > mediaSuperior)&&(difSupInf > TOLERANCE_CONTROL)) {   // Identifica eixo vertical BAIXO(DOWN)
+    if(numStep1 > MIN_STEPS_1 ) { 
+    LedsControle(LED_INF);  
+		numStep1 = numStep1 - difSupInf; 
+		for(pulseMotor = 0; pulseMotor < difSupInf; pulseMotor++){ AcionaMotor(MOTOR_INF);}
+	  }
+  }
+
+  /*********** Controle DIREITA/ESQUERDA ****************/
+  if (mediaEsquerda == mediaDireita) {
+    LedsControle(LED_C);
+    analogWrite(CLOCK2_STEPPER, 0);
+    delay(DELAY_MOTOR);
+  } else
+  if ((mediaEsquerda > mediaDireita) && (difEsqDir > TOLERANCE_CONTROL)) {    //Identifica eixo horizontal ESQUERDO(LEFT)
+        if(++numStep2 > MAX_STEPS_2 ){ 
+      		numStep2 = MAX_STEPS_2; 
+      	} else {
+          LedsControle(LED_E);
+      		for(pulseMotor = 0; pulseMotor < difEsqDir; pulseMotor++) AcionaMotor(MOTOR_E);
+      	}
+	} else
+  if ((mediaDireita > mediaEsquerda) && (difEsqDir > TOLERANCE_CONTROL)) { //Identifica eixo horizontal DIREITO(RIGHT)
+      if(numStep2 > MIN_STEPS_2 ){ 
+      LedsControle(LED_D);
+  		numStep2 = numStep2 - difEsqDir ; 
+  		for(pulseMotor = 0; pulseMotor < difEsqDir; pulseMotor++) AcionaMotor(MOTOR_D);
+      }
+  }
+}
+void changeMenu()                                       //Modifica o menu atual
+{
+  botaoAtu = digitalRead(PIN_BOTAO_TELAS);
+  if (botaoAtu && !botaoAnt) {
+    lcd.clear();
+    telas++;
+
+    if (telas > 3) {
+      telas = 0;
+    }
+  }
+  botaoAnt = botaoAtu;
+
+}
+void dispMenu()                                         //Mostra o menu atual
+{
+  switch (telas)                                       //Controle da variável tela
+  {
+    case 1:
+      LDRs ();
+      break;
+    case 2:
+      Sentido_Rotacao_H ();
+      break;
+    case 3:
+      Estado();
+      break;
+
+    default:
+      lcd.setCursor(0, 0);
+      lcd.print("Menu principal");
+      lcd.setCursor(0, 1);
+      lcd.print("Aperte o botao");
+      break;
+  } //end switch menu
+
+} //end dispMenu
+
+void LDRs () {
+  lcd.setCursor(0, 0);
+  lcd.print("LDRs");
+  lcd.setCursor(8, 0);
+  lcd.print(saida_LDR_SUP_E);
+  lcd.setCursor(10, 0);
+  lcd.print(" ");
+  lcd.setCursor(12, 0);
+  lcd.print(saida_LDR_SUP_D);
+  lcd.setCursor(14, 0);
+  lcd.print("  ");
+  lcd.setCursor(8, 1);
+  lcd.print(saida_LDR_INF_E);
+  lcd.setCursor(10, 1);
+  lcd.print(" ");
+  lcd.setCursor(12, 1);
+  lcd.print(saida_LDR_INF_D);
+  lcd.setCursor(14, 1);
+  lcd.print("  ");
+}
+void Sentido_Rotacao_H () {
+  lcd.setCursor(0, 0);
+  lcd.print("Sentido de Rotacao");
+  lcd.setCursor(0, 1);
+  lcd.print("Eixo Hor:");
+}
+
+void Estado()
+{
+  estadoBotao = digitalRead(PIN_BOTAO);
+  if (( estadoBotao && estAntBotao) && ((millis() - delayEstado) > 100 ))
+  {
+    x = !x;
+    lcd.clear();
+  }
+  delayEstado = millis();
+  estAntBotao = estadoBotao;
+  if ( x == 0)
+  {
+    lcd.setCursor(0, 0);
+    lcd.print("   Mode Manual  ");
+    lcd.setCursor(0, 1);
+    lcd.print(" ");
+  }
+  if (x == 1)
+  {
+    lcd.setCursor(0, 0);
+    lcd.print("   Mode Auto   ");
+    lcd.setCursor(0, 1);
+    lcd.print(" ");
+  }
+}
+
+void LedsControle( byte led)
+{
+	switch (led)     
+  {
+    case LED_SUP:
+	    digitalWrite(LED_SUP, 1);
+      digitalWrite(LED_INF, 0);
+      digitalWrite(LED_C, 0);
+      break;
+    case LED_INF:
+	   	digitalWrite(LED_SUP, 0);
+      digitalWrite(LED_INF, 1);
+      digitalWrite(LED_C, 0);
+      break;
+    case LED_D:
+	    digitalWrite(LED_E, 0);
+      digitalWrite(LED_D, 1);
+      digitalWrite(LED_C, 0);
+      break;
+    case LED_E:
+	    digitalWrite(LED_E, 1);
+      digitalWrite(LED_D, 0);
+      digitalWrite(LED_C, 0);
+      break;
+	case LED_C:
+		  digitalWrite(LED_SUP, 0);
+      digitalWrite(LED_INF, 0);
+      digitalWrite(LED_E, 0);
+      digitalWrite(LED_D, 0);
+      digitalWrite(LED_C, 1);
+      break;
+    default: //Erro no controle liga todos LEDs
+	    digitalWrite(LED_SUP, 1);
+      digitalWrite(LED_INF, 1);
+	    digitalWrite(LED_E, 1);
+      digitalWrite(LED_D, 1);
+      digitalWrite(LED_C, 1);
+      break;
+  }
+}
+
+void AcionaMotor( byte aciona_motor)
+{
+switch (aciona_motor)     
+  {
+    case MOTOR_SUP:
+      digitalWrite(SENTIDO1_CWCCW, 1);
+      digitalWrite(CLOCK1_STEPPER, 1);
+      delay(DELAY_MOTOR);
+      digitalWrite(CLOCK1_STEPPER, 0);
+      delay(DELAY_MOTOR);
+      break;
+    case MOTOR_INF:
+      digitalWrite(SENTIDO1_CWCCW, 0);
+      digitalWrite(CLOCK1_STEPPER, 1);
+      delay(DELAY_MOTOR);
+      digitalWrite(CLOCK1_STEPPER, 0);
+      delay(DELAY_MOTOR);
+      break;
+    case MOTOR_D:
+      digitalWrite(SENTIDO2_CWCCW, 0);
+      digitalWrite(CLOCK2_STEPPER, 1);
+      delay(DELAY_MOTOR);
+      digitalWrite(CLOCK2_STEPPER, 0);
+    delay(DELAY_MOTOR);
+      break;
+    case MOTOR_E:
+      digitalWrite(SENTIDO2_CWCCW, 1);
+      digitalWrite(CLOCK2_STEPPER, 1);
+      delay(DELAY_MOTOR);
+      digitalWrite(CLOCK2_STEPPER, 0);
+      delay(DELAY_MOTOR);
+      break;
+    default:
+      break;
+  }
+}
+
+void DebugSerial()
+{
+  //Escrever os valores obtidos acima no monitor serial
+  //Entradas de sinal - SUPERIOR
+  //Serial.print("valor_LDR_SUP_E = ");
+  //Serial.println(valor_LDR_SUP_E);
+  //Serial.print("valor_LDR_SUP_D = ");
+  //Serial.println(valor_LDR_SUP_D);
+  /*
+    //Sinal convertido de 0a1023 para 0a255 - SUPERIOR
+    Serial.print("\t saida_LDR_SUP_E = ");
+    Serial.println(saida_LDR_SUP_E);
+    Serial.print("\t saida_LDR_SUP_D = ");
+    Serial.println(saida_LDR_SUP_D);
+  */
+  //Escrever os valores obtidos acima no monitor serial
+  //Entradas de sinal - INFERIOR
+  //Serial.print("valor_LDR_INF_E = ");
+  //Serial.println(valor_LDR_INF_E);
+  //Serial.print("valor_LDR_INF_D = ");
+  //Serial.println(valor_LDR_INF_D);
+  /*
+    //Sinal convertido de 0a1023 para 0a255 - INFERIOR
+    Serial.print("\t saida_LDR_INF_E = ");
+    Serial.println(saida_LDR_INF_E);
+    Serial.print("\t saida_LDR_INF_D = ");
+    Serial.println(saida_LDR_INF_D);
+  */
+  /*
+    Serial.print("\t mediaSuperior = ");
+    Serial.println(mediaSuperior);
+    Serial.print("\t mediaInferior = ");
+    Serial.println(mediaInferior);
+
+    Serial.print("\t mediaEsquerda = ");
+    Serial.println(mediaEsquerda);
+    Serial.print("\t mediaDireita = ");
+    Serial.println(mediaDireita);
+  */
+}
